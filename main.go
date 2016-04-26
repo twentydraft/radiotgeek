@@ -33,7 +33,7 @@ var (
 )
 
 func main() {
-	runtime.GOMAXPROCS(runtime.NumCPU())
+	runtime.GOMAXPROCS(runtime.NumCPU() + 2)
 	feed, err := rss.Fetch("http://www.radio-t.com/podcast-archives.rss")
 	if err != nil {
 		log.Println(err)
@@ -117,12 +117,13 @@ func SpawnWorker(t chan Task, fb chan FeedBack) {
 		for task := range tasks {
 			log.Printf("Start downloading %q\n", task.FileName)
 			if task.Attempt > 10 {
-				log.Printf("Failed download %q\n", task.FileName)
+				log.Printf("Failed download %q. Too much attempts\n", task.FileName)
+				feedback <- Unavailable
 				continue
 			} else if task.Attempt > 0 {
+				log.Println("Sllep for a while")
 				time.Sleep(4 * time.Second)
 			}
-			time.Sleep(time.Second)
 			filename = task.FileName + ".mp3"
 			if _, err := os.Stat(filename); err == nil {
 				log.Printf("%q already exists!\n", filename)
@@ -133,7 +134,7 @@ func SpawnWorker(t chan Task, fb chan FeedBack) {
 			if err != nil {
 				task.Attempt++
 				tasks <- task
-				log.Println(err)
+				log.Printf("Faild download %q\n%v", task.FileName, err)
 				continue
 			}
 			file, err = os.Create(filename)
@@ -142,12 +143,20 @@ func SpawnWorker(t chan Task, fb chan FeedBack) {
 				feedback <- Unavailable
 				continue
 			}
-			defer file.Close()
 			_, err = io.Copy(file, resp.Body)
 			if err != nil {
-				log.Println(err)
-				feedback <- Unavailable
+				task.Attempt++
+				tasks <- task
+				log.Printf("Faild download %q\n%v", task.FileName, err)
+				err = file.Close()
+				if err != nil {
+					log.Println(err)
+				}
 				continue
+			}
+			err = file.Close()
+			if err != nil {
+				log.Println(err)
 			}
 			log.Printf("%q downloaded!\n", task.FileName)
 			feedback <- Success
