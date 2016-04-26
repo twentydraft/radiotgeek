@@ -125,7 +125,7 @@ func SpawnWorker(t chan Task, fb chan FeedBack) {
 			time.Sleep(time.Second)
 			filename = task.FileName + ".mp3"
 			if _, err := os.Stat(filename); err == nil {
-				log.Println("%q already exists!\n", filename)
+				log.Printf("%q already exists!\n", filename)
 				feedback <- AlreadyExists
 				continue
 			}
