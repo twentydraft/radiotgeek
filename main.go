@@ -82,8 +82,10 @@ func main() {
 				close(tasks)
 				close(feedback)
 			}
+			break
 		case Unavailable:
 			avalaible--
+			break
 		}
 
 	}
@@ -98,6 +100,8 @@ func SpawnWorker(t chan Task, fb chan FeedBack) {
 			val := recover()
 			if val != nil {
 				log.Printf("Worker dead: %v\n", val)
+				log.Printf("Unavailable\n")
+				feedback <- Unavailable
 				feedback <- Respawn
 			}
 		}()
