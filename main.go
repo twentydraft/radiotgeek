@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/SlyMarbo/rss"
@@ -28,9 +29,11 @@ var (
 	Respawn               = FeedBack(0)
 	Success               = FeedBack(1)
 	Unavailable           = FeedBack(2)
+	AlreadyExists         = FeedBack(3)
 )
 
 func main() {
+	runtime.GOMAXPROCS(runtime.NumCPU())
 	feed, err := rss.Fetch("http://www.radio-t.com/podcast-archives.rss")
 	if err != nil {
 		log.Println(err)
@@ -56,11 +59,16 @@ func main() {
 			}
 		}
 	}
+	if len(audiourls) == 0 {
+		log.Println("Feed unavailable")
+		os.Exit(1)
+	}
 	tasks := make(chan Task, len(audiourls))
 	feedback := make(chan FeedBack, 10)
-	for i := 0; i < 2; i++ {
+	for i := 0; i < runtime.NumCPU(); i++ {
 		SpawnWorker(tasks, feedback)
 	}
+	log.Printf("%d workers spawned!\n", runtime.NumCPU())
 	for fn, u := range audiourls {
 		tasks <- Task{
 			Attempt:  0,
@@ -83,7 +91,7 @@ func main() {
 				close(feedback)
 			}
 			break
-		case Unavailable:
+		case Unavailable, AlreadyExists:
 			avalaible--
 			break
 		}
@@ -96,6 +104,7 @@ func SpawnWorker(t chan Task, fb chan FeedBack) {
 		var resp *http.Response
 		var err error
 		var file *os.File
+		filename := ""
 		defer func() {
 			val := recover()
 			if val != nil {
@@ -113,6 +122,13 @@ func SpawnWorker(t chan Task, fb chan FeedBack) {
 			} else if task.Attempt > 0 {
 				time.Sleep(4 * time.Second)
 			}
+			time.Sleep(time.Second)
+			filename = task.FileName + ".mp3"
+			if _, err := os.Stat(filename); err == nil {
+				log.Println("%q already exists!\n", filename)
+				feedback <- AlreadyExists
+				continue
+			}
 			resp, err = http.Get(task.URL)
 			if err != nil {
 				task.Attempt++
@@ -120,15 +136,17 @@ func SpawnWorker(t chan Task, fb chan FeedBack) {
 				log.Println(err)
 				continue
 			}
-			file, err = os.Create(task.FileName + ".mp3")
+			file, err = os.Create(filename)
 			if err != nil {
 				log.Println(err)
+				feedback <- Unavailable
 				continue
 			}
 			defer file.Close()
 			_, err = io.Copy(file, resp.Body)
 			if err != nil {
 				log.Println(err)
+				feedback <- Unavailable
 				continue
 			}
 			log.Printf("%q downloaded!\n", task.FileName)
@@ -147,9 +165,10 @@ func ParseContent(r io.Reader) (string, error) {
 		}
 		token := d.Token()
 		if tokenType == html.StartTagToken && token.Data == "audio" {
-			if len(token.Attr) == 1 {
+			if len(token.Attr) == 2 {
 				return token.Attr[0].Val, nil
 			} else {
+				log.Println(token.Attr)
 				return "", ErrInvalidFeed
 			}
 		}
