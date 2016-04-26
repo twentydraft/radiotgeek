@@ -4,6 +4,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -64,9 +65,11 @@ func main() {
 		os.Exit(1)
 	}
 	tasks := make(chan Task, len(audiourls))
-	feedback := make(chan FeedBack, 10)
+	feedback := make(chan FeedBack, len(audiourls))
+	logchan := make(chan string, len(audiourls))
+
 	for i := 0; i < runtime.NumCPU(); i++ {
-		SpawnWorker(tasks, feedback)
+		SpawnWorker(tasks, feedback, logchan)
 	}
 	log.Printf("%d workers spawned!\n", runtime.NumCPU())
 	for fn, u := range audiourls {
@@ -78,29 +81,36 @@ func main() {
 	}
 	dowloaded := 0
 	avalaible := len(audiourls) - 1
-	for r := range feedback {
-		switch r {
-		case Respawn:
-			SpawnWorker(tasks, feedback)
-			break
-		case Success:
-			dowloaded++
-			if dowloaded == avalaible {
-				log.Println("All downloads ended!\n")
-				close(tasks)
-				close(feedback)
+	var r FeedBack
+	var l string
+	for {
+		select {
+		case r = <-feedback:
+			switch r {
+			case Respawn:
+				SpawnWorker(tasks, feedback, logchan)
+				break
+			case Success:
+				dowloaded++
+				if dowloaded == avalaible {
+					log.Println("All downloads ended!\n")
+					close(tasks)
+					close(feedback)
+				}
+				break
+			case Unavailable, AlreadyExists:
+				avalaible--
+				break
 			}
-			break
-		case Unavailable, AlreadyExists:
-			avalaible--
-			break
+		case l = <-logchan:
+			log.Printf("%s", l)
 		}
 
 	}
 }
 
-func SpawnWorker(t chan Task, fb chan FeedBack) {
-	go func(tasks chan Task, feedback chan FeedBack) {
+func SpawnWorker(t chan Task, fb chan FeedBack, l chan string) {
+	go func(tasks chan Task, feedback chan FeedBack, logchan chan string) {
 		var resp *http.Response
 		var err error
 		var file *os.File
@@ -108,25 +118,24 @@ func SpawnWorker(t chan Task, fb chan FeedBack) {
 		defer func() {
 			val := recover()
 			if val != nil {
-				log.Printf("Worker dead: %v\n", val)
-				log.Printf("Unavailable\n")
+				logchan <- fmt.Sprintf("Worker dead: %v\n", val)
 				feedback <- Unavailable
 				feedback <- Respawn
 			}
 		}()
 		for task := range tasks {
-			log.Printf("Start downloading %q\n", task.FileName)
+			logchan <- fmt.Sprintf("Start downloading %q\n", task.FileName)
 			if task.Attempt > 10 {
-				log.Printf("Failed download %q. Too much attempts\n", task.FileName)
+				logchan <- fmt.Sprintf("Failed download %q. Too much attempts\n", task.FileName)
 				feedback <- Unavailable
 				continue
 			} else if task.Attempt > 0 {
-				log.Println("Sllep for a while")
+				logchan <- fmt.Sprintln("Sllep for a while")
 				time.Sleep(4 * time.Second)
 			}
 			filename = task.FileName + ".mp3"
 			if _, err := os.Stat(filename); err == nil {
-				log.Printf("%q already exists!\n", filename)
+				logchan <- fmt.Sprintf("%q already exists!\n", filename)
 				feedback <- AlreadyExists
 				continue
 			}
@@ -134,7 +143,7 @@ func SpawnWorker(t chan Task, fb chan FeedBack) {
 			if err != nil {
 				task.Attempt++
 				tasks <- task
-				log.Printf("Faild download %q\n%v", task.FileName, err)
+				logchan <- fmt.Sprintf("Failed download %q\n%v", task.FileName, err)
 				continue
 			}
 			file, err = os.Create(filename)
@@ -161,7 +170,7 @@ func SpawnWorker(t chan Task, fb chan FeedBack) {
 			log.Printf("%q downloaded!\n", task.FileName)
 			feedback <- Success
 		}
-	}(t, fb)
+	}(t, fb, l)
 }
 
 func ParseContent(r io.Reader) (string, error) {
